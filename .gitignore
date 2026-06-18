@@ -1,0 +1,15 @@
+app.db
+.env
+
+backend/static/images/*
+!backend/static/images/.gitkeep
+
+package.json
+package-lock.json
+
+
+Stuff_left.md
+
+
+__pycache__/
+node_modules/
