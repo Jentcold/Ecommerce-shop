@@ -51,7 +51,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    send_verification_email(user.email, token)
+    # send_verification_email(user.email, token)
     logger.info(f"New user registered: {user.email}")
 
     return Token(access_token=create_access_token(user.id))

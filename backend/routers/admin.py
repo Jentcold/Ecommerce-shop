@@ -43,12 +43,23 @@ def list_products(
 
 @products_router.get("/categories", response_model=list[str])
 def get_categories(
+    section: Optional[str] = None,
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin),
 ):
-    rows = db.query(Product.category).distinct().filter(Product.category.isnot(None)).all()
+    query = db.query(Product.category).distinct().filter(Product.category.isnot(None))
+    if section:
+        query = query.filter(Product.section == section)
+    rows = query.all()
     return sorted([r[0] for r in rows if r[0]])
 
+@products_router.get("/sections", response_model=list[str])
+def get_sections(
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin),
+):
+    rows = db.query(Product.section).distinct().filter(Product.section.isnot(None)).all()
+    return sorted([r[0] for r in rows if r[0]])
 
 @products_router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 def create_product(
@@ -59,6 +70,7 @@ def create_product(
     product = Product(
         name=payload.name,
         description=payload.description,
+        section=payload.section,
         category=payload.category,
         brand=payload.brand,
         price=payload.price,

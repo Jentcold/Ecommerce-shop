@@ -11,6 +11,7 @@ class Product(Base):
     price = Column(Float)
     stock = Column(Integer)
 
+    section = Column(String)
     category = Column(String)
     brand = Column(String, nullable=True)
     discount = Column(Float, nullable=True)

@@ -8,17 +8,11 @@ export const toggleActive   = (id)         => client.patch(`/admin/products/${id
 export const toggleFeatured = (id)         => client.patch(`/admin/products/${id}/toggle-featured`)
 export const addImages      = (id, urls)   => client.post(`/admin/products/${id}/images`, urls)
 export const deleteImage    = (pid, iid)   => client.delete(`/admin/products/${pid}/images/${iid}`)
-export const getCategories  = ()           => client.get('/admin/products/categories')
+export const getSections    = ()           => client.get('/admin/products/sections')
+export const getCategories  = (section)    => client.get('/admin/products/categories', { params: section ? { section } : {} })
 
-/**
- * Multi-image upload connector
- * Sends multipart/form-data payload to the custom backend upload utility router
- * * @param {File[]} files - Array of image files selected from the file input
- * @returns {Promise<string[]>} - Array of static file relative asset URL paths
- */
 export const uploadImages = async (files) => {
   const formData = new FormData()
-  
   files.forEach((file) => {
     formData.append('files', file)
   })
@@ -28,6 +22,5 @@ export const uploadImages = async (files) => {
       'Content-Type': 'multipart/form-data',
     },
   })
-  
   return response.data
 }

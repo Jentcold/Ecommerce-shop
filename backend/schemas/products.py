@@ -16,6 +16,7 @@ class ProductImageResponse(BaseModel):
 class ProductCreate(BaseModel):
     name: str
     description: str
+    section: str
     category: str
     brand: Optional[str] = None
     price: float
@@ -30,6 +31,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    section: Optional[str] = None
     category: Optional[str] = None
     brand: Optional[str] = None
     price: Optional[float] = None
@@ -45,6 +47,7 @@ class ProductResponse(BaseModel):
     id: int
     name: str
     description: str
+    section: str
     category: str
     brand: Optional[str]
     price: float
@@ -56,3 +59,7 @@ class ProductResponse(BaseModel):
     images: list[ProductImageResponse] = []
 
     model_config = {"from_attributes": True}
+
+class PaginatedProducts(BaseModel):
+    items: list[ProductResponse]
+    has_more: bool

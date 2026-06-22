@@ -1,96 +1,157 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import Layout from '../components/Layout'
 import ProductCard from '../components/ProductCard'
-import { getProducts } from '../api/products'
+import SectionSearchBar from '../components/SectionSearchBar'
+import { getProducts, getOnSale, searchProducts, getSections, getCategories } from '../api/products'
 import client from '../api/client'
 
+const PAGE_SIZE = 20
+const SEARCH_DEBOUNCE_MS = 300
+
 export default function Home() {
-  const [products, setProducts]       = useState([])
-  const [allProducts, setAllProducts] = useState([])
-  const [category, setCategory]       = useState('All')
-  const [loading, setLoading]         = useState(true)
-  const [search, setSearch]           = useState('')
+  const [products, setProducts]       = useState([])   // accumulated, paginated grid items
+  const [offset, setOffset]           = useState(0)
+  const [hasMore, setHasMore]         = useState(true)
+  const [loadingPage, setLoadingPage] = useState(false) // loading a single page (initial or "load more")
+
+  const [saleProducts, setSaleProducts] = useState([])
+  const [sectionTree, setSectionTree]   = useState({}) // { "Women": ["Socks", "Leggings"], ... }
+  const [activeSection, setActiveSection]   = useState(null) // null = All
+  const [activeCategory, setActiveCategory] = useState(null)
   const [saleActive, setSaleActive]   = useState(false)
 
-  // ── LOAD CORE PUBLIC DATA & BANNER CONFIGURATIONS ─────────────────────────
+  const [search, setSearch]           = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+
+  const sentinelRef = useRef(null)
+  const requestKeyRef = useRef(0) // guards against stale responses overwriting newer ones
+
+  const isSearching = debouncedSearch.trim().length > 0
+
+  // ── LOAD SALE BANNER + SHOP SETTINGS (independent of pagination) ──────────
   useEffect(() => {
-    setLoading(true)
-    
-    Promise.all([
-      // Fetch public store products list
-      getProducts(null)
-        .then(r => setAllProducts(r.data))
-        .catch(err => console.error("Error loading home catalog items:", err)),
-        
-      // Fetch public shop settings (No more 403 errors!)
-      client.get('/products/shop/settings')
-        .then(r => {
-          setSaleActive(r.data?.sale_active === 'true')
-        })
-        .catch(err => {
-          console.warn("Could not read layout configurations gracefully:", err)
-          setSaleActive(false)
-        })
-    ]).finally(() => setLoading(false))
+    getOnSale({ limit: 100 })
+      .then(r => setSaleProducts(r.data?.items || []))
+      .catch(err => console.error("Error loading sale products:", err))
+
+    client.get('/products/shop/settings')
+      .then(r => setSaleActive(r.data?.sale_active === 'true'))
+      .catch(err => {
+        console.warn("Could not read layout configurations gracefully:", err)
+        setSaleActive(false)
+      })
   }, [])
 
-  // ── HANDLE CATEGORY FILTER CHANGES ─────────────────────────────────────────
+  // ── LOAD SECTION → CATEGORY TREE FROM THE BACKEND ─────────────────────────
   useEffect(() => {
-    setLoading(true)
-    getProducts(category === 'All' ? null : category)
-      .then(r => setProducts(r.data))
-      .finally(() => setLoading(false))
-  }, [category])
+    getSections()
+      .then(async (r) => {
+        const sectionNames = Array.isArray(r?.data) ? r.data : []
+        const tree = {}
+        await Promise.all(
+          sectionNames.map(async (name) => {
+            try {
+              const catRes = await getCategories(name)
+              tree[name] = Array.isArray(catRes?.data) ? catRes.data : []
+            } catch (err) {
+              console.error(`Error loading categories for section "${name}":`, err)
+              tree[name] = []
+            }
+          })
+        )
+        setSectionTree(tree)
+      })
+      .catch(err => console.error("Error loading sections:", err))
+  }, [])
 
-  // Get list of distinct active categories for filters
-  const categories = useMemo(() => {
-    const cats = [...new Set(allProducts.map(p => p.category).filter(Boolean))]
-    return ['All', ...cats]
-  }, [allProducts])
+  // ── DEBOUNCE SEARCH INPUT ───────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [search])
 
-  // Sort: featured first, then discounted, then normal
-  const sorted = useMemo(() => {
+  // ── FETCH A PAGE — shared by both browsing (section/category) and search ──
+  // Source function switches based on whether a search term is active, but
+  // both paths return the same { items, has_more } shape and append the same way.
+  const fetchPage = useCallback((targetOffset, { reset }) => {
+    const myKey = ++requestKeyRef.current
+    setLoadingPage(true)
+
+    const request = isSearching
+      ? searchProducts(debouncedSearch.trim(), {
+          section:  activeSection  || undefined,
+          category: activeCategory || undefined,
+          limit:    PAGE_SIZE,
+          offset:   targetOffset,
+        })
+      : getProducts({
+          section:  activeSection  || undefined,
+          category: activeCategory || undefined,
+          limit:    PAGE_SIZE,
+          offset:   targetOffset,
+        })
+
+    request
+      .then(r => {
+        if (myKey !== requestKeyRef.current) return // a newer request superseded this one
+        const { items = [], has_more = false } = r.data || {}
+        setProducts(prev => (reset ? items : [...prev, ...items]))
+        setHasMore(has_more)
+        setOffset(targetOffset + items.length)
+      })
+      .catch(err => console.error("Error loading products:", err))
+      .finally(() => {
+        if (myKey === requestKeyRef.current) setLoadingPage(false)
+      })
+  }, [activeSection, activeCategory, isSearching, debouncedSearch])
+
+  // Reset to page 0 whenever the filter OR the (debounced) search term changes.
+  useEffect(() => {
+    setProducts([])
+    setOffset(0)
+    setHasMore(true)
+    fetchPage(0, { reset: true })
+  }, [activeSection, activeCategory, debouncedSearch]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadMore = useCallback(() => {
+    if (loadingPage || !hasMore) return
+    fetchPage(offset, { reset: false })
+  }, [loadingPage, hasMore, offset, fetchPage])
+
+  // ── INFINITE SCROLL ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore() },
+      { rootMargin: '400px' } // start loading a bit before the sentinel is actually visible
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [loadMore])
+
+  const handleSelectCategory = (sectionName, categoryName) => {
+    const isSameSelection = activeSection === sectionName && activeCategory === categoryName
+    setActiveSection(isSameSelection ? null : sectionName)
+    setActiveCategory(isSameSelection ? null : categoryName)
+  }
+
+  const handleSearchChange = (value) => {
+    setSearch(value)
+  }
+
+  // Sort: featured first, then discounted, then normal (browsing only — search
+  // results are returned by relevance/order from the backend, left as-is)
+  const sortedProducts = useMemo(() => {
+    if (isSearching) return products
     return [...products].sort((a, b) => {
       const scoreA = (a.is_featured ? 2 : 0) + (a.discount ? 1 : 0)
       const scoreB = (b.is_featured ? 2 : 0) + (b.discount ? 1 : 0)
       return scoreB - scoreA
     })
-  }, [products])
+  }, [products, isSearching])
 
-  // Sale products — filtering for active discounted items only
-  const saleProducts = useMemo(() =>
-    allProducts.filter(p => p.discount && p.is_active),
-  [allProducts])
-
-  // Fuzzy search algorithm with score weight balancing
-  const filtered = useMemo(() => {
-    if (!search.trim()) return sorted
-    const term = search.toLowerCase().trim()
-    return sorted
-      .map(p => {
-        const name  = p.name?.toLowerCase() || ''
-        const desc  = p.description?.toLowerCase() || ''
-        const cat   = p.category?.toLowerCase() || ''
-        const brand = p.brand?.toLowerCase() || ''
-        let score = 0
-        if (name === term)          score += 100
-        if (name.startsWith(term))  score += 60
-        if (name.includes(term))    score += 40
-        if (brand.includes(term))   score += 30
-        if (cat.includes(term))     score += 20
-        if (desc.includes(term))    score += 10
-        search.split(' ').filter(Boolean).forEach(w => {
-          if (name.includes(w))  score += 15
-          if (brand.includes(w)) score += 10
-          if (cat.includes(w))   score += 8
-          if (desc.includes(w))  score += 3
-        })
-        return { product: p, score }
-      })
-      .filter(({ score }) => score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map(({ product }) => product)
-  }, [sorted, search])
+  const loading = loadingPage && products.length === 0
 
   return (
     <Layout>
@@ -104,10 +165,20 @@ export default function Home() {
         </p>
       </div>
 
+      {/* Oval section + search bar */}
+      <SectionSearchBar
+        sections={sectionTree}
+        activeSection={activeSection}
+        activeCategory={activeCategory}
+        onSelectCategory={handleSelectCategory}
+        search={search}
+        onSearchChange={handleSearchChange}
+      />
+
       <div className="max-w-6xl mx-auto px-6 py-6">
 
-        {/* Sale section — only shows when admin activates it via public configurations */}
-        {saleActive && saleProducts.length > 0 && (
+        {/* Sale section — sourced from its own dedicated endpoint, independent of pagination */}
+        {saleActive && !isSearching && saleProducts.length > 0 && (
           <div className="mb-10">
             <div className="flex items-center gap-3 mb-4">
               <span className="bg-[#b07060] text-white text-xs px-3 py-1 rounded-full tracking-widest uppercase font-['DM_Sans']">
@@ -124,47 +195,37 @@ export default function Home() {
           </div>
         )}
 
-        {/* Search + Filter UI Layout Panel */}
-        <div className="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
-          <div className="flex gap-2 flex-wrap">
-            {categories.map(cat => (
-              <button key={cat} onClick={() => { setCategory(cat); setSearch('') }}
-                className={`px-4 py-1.5 rounded-full text-xs tracking-widest uppercase border transition-all font-['DM_Sans']
-                  ${category === cat
-                    ? 'bg-[#1a1715] text-white border-[#1a1715]'
-                    : 'border-[#ede5e0] text-[#6b6460] hover:border-[#1a1715] hover:text-[#1a1715] bg-white'
-                  }`}>
-                {cat}
-              </button>
-            ))}
-          </div>
-          <div className="relative w-full md:w-64">
-            <input value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Search products..."
-              className="w-full border border-[#ede5e0] rounded px-4 py-2 text-sm text-[#1a1715] outline-none focus:border-[#1a1715] transition-colors bg-white font-['DM_Sans'] placeholder:text-[#aaa]" />
-            {search && (
-              <button onClick={() => setSearch('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#aaa] hover:text-[#1a1715] text-lg leading-none">×</button>
-            )}
-          </div>
-        </div>
-
         {/* Dynamic Search Status Text Context Indicator */}
         <p className="text-xs text-[#aaa] tracking-widest uppercase mb-6 font-['DM_Sans']">
-          {loading ? 'Loading...' : `${filtered.length} product${filtered.length !== 1 ? 's' : ''}`}
-          {search && ` for "${search}"`}
+          {loading ? 'Loading...' : `${sortedProducts.length} product${sortedProducts.length !== 1 ? 's' : ''}`}
+          {activeSection && ` in ${activeSection}${activeCategory ? ` · ${activeCategory}` : ''}`}
+          {isSearching && ` for "${debouncedSearch}"`}
         </p>
 
         {/* Fallback Display if Query List Array is Empty */}
-        {!loading && filtered.length === 0 && (
+        {!loading && sortedProducts.length === 0 && (
           <div className="text-center py-20 text-[#aaa] font-['DM_Sans'] text-sm">
-            {search ? `No products found for "${search}"` : 'No products found'}
+            {isSearching
+              ? `No products found for "${debouncedSearch}"${activeSection ? ` in ${activeSection}${activeCategory ? ` · ${activeCategory}` : ''}` : ''}`
+              : activeSection
+                ? `No products found in ${activeSection}${activeCategory ? ` · ${activeCategory}` : ''}`
+                : 'No products found'}
           </div>
         )}
 
         {/* Main Product Grid Container Element Layout Showcase */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-          {filtered.map(p => <ProductCard key={p.id} product={p} />)}
+          {sortedProducts.map(p => <ProductCard key={p.id} product={p} />)}
+        </div>
+
+        {/* Infinite scroll sentinel + loading indicator */}
+        <div ref={sentinelRef} className="h-10 flex items-center justify-center mt-8">
+          {loadingPage && products.length > 0 && (
+            <span className="text-xs text-[#aaa] tracking-widest uppercase font-['DM_Sans']">Loading more...</span>
+          )}
+          {!hasMore && products.length > 0 && (
+            <span className="text-xs text-[#aaa] tracking-widest uppercase font-['DM_Sans']">You've reached the end</span>
+          )}
         </div>
       </div>
     </Layout>

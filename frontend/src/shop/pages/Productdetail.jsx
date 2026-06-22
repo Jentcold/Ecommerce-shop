@@ -42,8 +42,6 @@ export default function ProductDetail() {
   )
   if (!product) return null
 
-  // ─── DYNAMIC BACKEND SIZES LOGIC ───
-  // Reads sizes array from DB. Supports fallback if backend sends it stringified.
   const sizes = Array.isArray(product.sizes)
     ? product.sizes
     : typeof product.sizes === 'string'
@@ -61,7 +59,6 @@ export default function ProductDetail() {
     : null
 
   const handleAddToCart = () => {
-    // Only block execution if the product actually has variants to select from
     if (hasSizes && !selectedSize) { 
       setSizeError(true)
       return 
@@ -71,7 +68,6 @@ export default function ProductDetail() {
       return 
     }
     
-    // Pass null or the chosen size depending on product type
     addItem(product, hasSizes ? selectedSize : null)
     setAdded(true)
     setTimeout(() => setAdded(false), 2000)
